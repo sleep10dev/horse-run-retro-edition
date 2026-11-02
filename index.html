@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Horse Run - Pixel Art Edition</title>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+        .arcade-cabinet {
+            position: relative;
+            border: 6px solid #444;
+            background-color: #dcdcdc;
+            box-shadow: 0px 0px 40px rgba(0,0,0,0.95), inset 0 0 50px rgba(0,0,0,0.15);
+            border-radius: 6px;
+        }
+        /* Efeito CRT (Scanlines) */
+        .arcade-cabinet::after {
+            content: " ";
+            display: block;
+            position: absolute;
+            top: 0; left: 0; bottom: 0; right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.1) 50%);
+            background-size: 100% 4px;
+            pointer-events: none;
+        }
+        canvas {
+            display: block;
+            width: 90vw;
+            max-width: 1000px;
+            height: auto;
+        }
+        p {
+            color: #888;
+            font-size: 14px;
+            margin-top: 15px;
+            letter-spacing: 1px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="arcade-cabinet">
+        <canvas id="gameCanvas" width="1000" height="380"></canvas>
+    </div>
+    <p>Pressione <strong>ESPAÇO</strong> ou <strong>SETA PARA CIMA</strong> para saltar | <strong>R</strong> para reiniciar</p>
+
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+
+        // Sistema de Áudio Sintetizado (Web Audio API)
+        let audioCtx = null;
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+        }
+
+        function playSound(type) {
+            if (!audioCtx) return;
+            try {
+                let osc = audioCtx.createOscillator();
+                let gainNode = audioCtx.createGain();
+                osc.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+
+                let now = audioCtx.currentTime;
+
+                if (type === 'hoof') {
+                    // Som curto e grave de casco batendo no chão
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(110, now);
+                    osc.frequency.exponentialRampToValueAtTime(35, now + 0.04);
+                    gainNode.gain.setValueAtTime(0.12, now);
+                    gainNode.gain.linearRampToValueAtTime(0.01, now + 0.04);
+                    osc.start(now);
+                    osc.stop(now + 0.04);
+                } else if (type === 'score100') {
+                    // Som alegre a cada 100 pontos
+                    osc.type = 'square';
+                    osc.frequency.setValueAtTime(440, now);
+                    osc.frequency.setValueAtTime(554.37, now + 0.1);
+                    osc.frequency.setValueAtTime(659.25, now + 0.2);
+                    gainNode.gain.setValueAtTime(0.15, now);
+                    gainNode.gain.linearRampToValueAtTime(0.01, now + 0.3);
+                    osc.start(now);
+                    osc.stop(now + 0.3);
+                } else if (type === 'gameover') {
+                    // Som de colisão
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(160, now);
+                    osc.frequency.linearRampToValueAtTime(30, now + 0.3);
+                    gainNode.gain.setValueAtTime(0.25, now);
+                    gainNode.gain.linearRampToValueAtTime(0.01, now + 0.3);
+                    osc.start(now);
+                    osc.stop(now + 0.3);
+                }
+            } catch (e) {
+                console.log("Áudio bloqueado até interagir com a página.");
+            }
+        }
+
+        // Sistema de JSON / LocalStorage para persistir o recorde
+        let savedData = JSON.parse(localStorage.getItem("horseRunSave")) || { highScore: 0 };
+        let highScore = savedData.highScore;
+
+        let horse = {
+            x: 100,
+            y: 260,
+            width: 56,
+            height: 44,
+            vy: 0,
+            gravity: 0.8,
+            jumpPower: -14,
+            isJumping: false,
+            animFrame: 0
+        };
+
+        let obstacles = [];
+        let clouds = [];
+        let mountains = [];
+        let particles = [];
+        let gameSpeed = 7;
+        let score = 0;
+        let lastScoreCheckpoint = 0;
+        let isGameOver = false;
+        let frameCount = 0;
+
+        for(let i = 0; i < 4; i++) {
+            mountains.push({ x: i * 350, y: 245, width: 280, height: 60 });
+        }
+
+        document.addEventListener("keydown", function(e) {
+            initAudio(); // Ativa o áudio na primeira interação
+            if (e.code === "Space" || e.code === "ArrowUp") {
+                e.preventDefault();
+                if (isGameOver) {
+                    resetGame();
+                } else if (!horse.isJumping) {
+                    horse.vy = horse.jumpPower;
+                    horse.isJumping = true;
+                    createDust();
+                }
+            }
+            if (e.code === "KeyR" && isGameOver) {
+                resetGame();
+            }
+        });
+
+        function createDust() {
+            for(let i = 0; i < 6; i++) {
+                particles.push({
+                    x: horse.x + 10,
+                    y: 310,
+                    vx: -Math.random() * 2 - 1,
+                    vy: -Math.random() * 2,
+                    size: Math.random() * 4 + 2
+                });
+            }
+        }
+
+        function resetGame() {
+            obstacles = [];
+            particles = [];
+            score = 0;
+            lastScoreCheckpoint = 0;
+            gameSpeed = 7;
+            isGameOver = false;
+            horse.y = 260;
+            horse.vy = 0;
+            horse.isJumping = false;
+            frameCount = 0;
+        }
+
+        function update() {
+            if (isGameOver) return;
+
+            frameCount++;
+
+            horse.vy += horse.gravity;
+            horse.y += horse.vy;
+
+            // Animação de corrida e som rítmico das patas
+            if (!horse.isJumping && frameCount % 6 === 0) {
+                horse.animFrame = (horse.animFrame + 1) % 4;
+                playSound('hoof'); // Toca o som do casco no chão
+            }
+
+            if (horse.y > 260) {
+                horse.y = 260;
+                horse.vy = 0;
+                horse.isJumping = false;
+            }
+
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].x += particles[i].vx;
+                particles[i].y += particles[i].vy;
+                particles[i].size -= 0.1;
+                if (particles[i].size <= 0) particles.splice(i, 1);
+            }
+
+            if (frameCount % 160 === 0) {
+                clouds.push({ x: canvas.width, y: Math.random() * 100 + 30, width: 80, height: 24, speed: 1.2 });
+            }
+
+            for (let i = clouds.length - 1; i >= 0; i--) {
+                clouds[i].x -= clouds[i].speed;
+                if (clouds[i].x + clouds[i].width < 0) clouds.splice(i, 1);
+            }
+
+            mountains.forEach(m => {
+                m.x -= gameSpeed * 0.3;
+                if (m.x + m.width < 0) m.x = canvas.width;
+            });
+
+            if (frameCount % 100 === 0) {
+                obstacles.push({ x: canvas.width, y: 272, width: 26, height: 40 });
+            }
+
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                obstacles[i].x -= gameSpeed;
+
+                if (
+                    horse.x + 8 < obstacles[i].x + obstacles[i].width - 4 &&
+                    horse.x + horse.width - 8 > obstacles[i].x + 4 &&
+                    horse.y + 5 < obstacles[i].y + obstacles[i].height &&
+                    horse.y + horse.height > obstacles[i].y
+                ) {
+                    isGameOver = true;
+                    playSound('gameover');
+                    if (score > highScore) {
+                        highScore = score;
+                        localStorage.setItem("horseRunSave", JSON.stringify({ highScore: highScore }));
+                    }
+                }
+
+                if (obstacles[i].x + obstacles[i].width < 0) {
+                    obstacles.splice(i, 1);
+                    score += 10;
+
+                    // Som especial a cada 100 pontos
+                    if (score - lastScoreCheckpoint >= 100) {
+                        lastScoreCheckpoint = score;
+                        playSound('score100');
+                    }
+
+                    if (score % 60 === 0) gameSpeed += 0.5;
+                }
+            }
+        }
+
+        function drawHorse(x, y) {
+            ctx.fillStyle = "#7a431d"; 
+            ctx.fillRect(x + 12, y + 16, 30, 14);
+
+            ctx.fillRect(x + 8, y + 18, 6, 10);
+            ctx.fillRect(x + 40, y + 16, 6, 10);
+
+            ctx.fillRect(x + 36, y + 4, 8, 14);
+
+            ctx.fillRect(x + 40, y, 12, 8);
+            ctx.fillRect(x + 50, y + 2, 4, 5);
+
+            ctx.fillRect(x + 42, y - 3, 2, 4);
+
+            ctx.fillStyle = "#261508";
+            ctx.fillRect(x + 34, y + 4, 4, 12);
+            ctx.fillRect(x + 4, y + 14, 6, 12);
+
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(x + 46, y + 2, 2, 2);
+
+            ctx.fillStyle = "#5c3012";
+            if (horse.isJumping) {
+                ctx.fillRect(x + 14, y + 30, 4, 10);
+                ctx.fillRect(x + 20, y + 28, 4, 10);
+                ctx.fillRect(x + 30, y + 30, 4, 10);
+                ctx.fillRect(x + 36, y + 28, 4, 10);
+            } else {
+                let f = horse.animFrame;
+                if (f === 0) {
+                    ctx.fillRect(x + 14, y + 30, 4, 12);
+                    ctx.fillRect(x + 20, y + 30, 4, 10);
+                    ctx.fillRect(x + 32, y + 30, 4, 12);
+                    ctx.fillRect(x + 38, y + 28, 4, 10);
+                } else if (f === 1) {
+                    ctx.fillRect(x + 12, y + 30, 4, 11);
+                    ctx.fillRect(x + 17, y + 33, 4, 7);
+                    ctx.fillRect(x + 30, y + 28, 4, 12);
+                    ctx.fillRect(x + 36, y + 31, 4, 9);
+                } else if (f === 2) {
+                    ctx.fillRect(x + 16, y + 28, 4, 12);
+                    ctx.fillRect(x + 22, y + 30, 4, 10);
+                    ctx.fillRect(x + 34, y + 30, 4, 12);
+                    ctx.fillRect(x + 40, y + 29, 4, 10);
+                } else {
+                    ctx.fillRect(x + 18, y + 30, 4, 10);
+                    ctx.fillRect(x + 24, y + 28, 4, 12);
+                    ctx.fillRect(x + 28, y + 32, 4, 8);
+                    ctx.fillRect(x + 35, y + 30, 4, 11);
+                }
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = "#bcbcbc";
+            clouds.forEach(c => {
+                ctx.fillRect(c.x, c.y, c.width, c.height);
+                ctx.fillRect(c.x + 10, c.y - 6, c.width - 20, 8);
+            });
+
+            ctx.fillStyle = "#a2a2a2";
+            mountains.forEach(m => {
+                ctx.beginPath();
+                ctx.moveTo(m.x, m.y + m.height);
+                ctx.lineTo(m.x + m.width / 2, m.y);
+                ctx.lineTo(m.x + m.width, m.y + m.height);
+                ctx.fill();
+            });
+
+            ctx.fillStyle = "#555555";
+            ctx.fillRect(0, 312, canvas.width, 3);
+            
+            ctx.fillStyle = "#888888";
+            for(let i = 0; i < canvas.width; i += 40) {
+                let pos = (i - (frameCount * gameSpeed) % 40);
+                ctx.fillRect(pos, 318, 4, 2);
+            }
+
+            ctx.fillStyle = "#a89078";
+            particles.forEach(p => {
+                ctx.fillRect(p.x, p.y, p.size, p.size);
+            });
+
+            drawHorse(horse.x, horse.y);
+
+            ctx.fillStyle = "#2a5c3e";
+            obstacles.forEach(obs => {
+                ctx.fillRect(obs.x + 8, obs.y, 8, obs.height);
+                ctx.fillRect(obs.x, obs.y + 10, 26, 6);
+                ctx.fillRect(obs.x, obs.y + 4, 5, 12);
+                ctx.fillRect(obs.x + 21, obs.y + 4, 5, 12);
+            });
+
+            ctx.fillStyle = "#222222";
+            ctx.font = "bold 18px 'Courier New'";
+            let scoreStr = String(score).padStart(5, '0');
+            let hiStr = String(highScore).padStart(5, '0');
+            ctx.fillText(`HI: ${hiStr}   SCORE: ${scoreStr}`, 680, 40);
+
+            if (isGameOver) {
+                ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.fillStyle = "#FFFFFF";
+                ctx.font = "bold 26px 'Courier New'";
+                ctx.fillText("FIM DE JOGO", 410, 160);
+                
+                ctx.font = "15px 'Courier New'";
+                ctx.fillText("Pressione ESPAÇO ou R para recomeçar", 310, 205);
+            }
+        }
+
+        function loop() {
+            update();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        loop();
+    </script>
+</body>
+</html>
