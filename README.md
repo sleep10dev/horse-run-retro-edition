@@ -1,0 +1,4 @@
+# UMA EDIÇÃO UNICA DO JOGO HORSE RUN CRIADO POR APENAS UMA PESSOA QUE QUER SE DIVERTI E FAZER OS OUTROS FELIZES
+ESPERO QUE GOSTEM E SE DIVIRTAM MUITO.
+
+<img width="687" height="1024" alt="capa git" src="https://github.com/user-attachments/assets/34775dac-b7e3-46d9-9cc2-76885132e2f2" />
